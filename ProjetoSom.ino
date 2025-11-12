@@ -153,3 +153,87 @@ void controlarLEDs(int nivelRuído) {
 void checarAlertaDiscord() {
   // Se o timer do LED vermelho foi iniciado E o alerta ainda não foi enviado
   if (tempoInicioLedVermelho != 0 && !alertaEnviado) {
+    
+    // Verifica se já passou o tempo de alerta (ex: 30 segundos)
+    if (millis() - tempoInicioLedVermelho >= intervaloAlertaRuido) {
+      Serial.println(">>> TEMPO DE ALERTA ATINGIDO! Enviando notificação para o Discord...");
+      dispararAlertaDiscord();
+      alertaEnviado = true; // Marca como enviado para não repetir
+      tempoInicioLedVermelho = 0; // Reseta o timer
+    }
+  }
+}
+
+// Envia os dados de ruído para o ThingSpeak
+void enviarDadosThingSpeak(int nivelRuido) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    
+    // Constrói a URL de envio
+    String url = "http://api.thingspeak.com/update?api_key=" + thingSpeakApiKey + "&field1=" + String(nivelRuido);
+    
+    http.begin(url); // Inicia a conexão
+    int httpCode = http.GET(); // Faz a requisição
+    
+    if (httpCode > 0) {
+      Serial.printf("[ThingSpeak] Enviado com sucesso, código: %d\n", httpCode);
+    } else {
+      Serial.printf("[ThingSpeak] Falha no envio, erro: %s\n", http.errorToString(httpCode).c_str());
+    }
+    
+    http.end(); // Fecha a conexão
+  } else {
+    Serial.println("WiFi desconectado. Não foi possível enviar para o ThingSpeak.");
+  }
+}
+
+// *** FUNÇÃO ATUALIZADA PARA O DISCORD ***
+// Dispara o alerta para o Discord
+void dispararAlertaDiscord() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    
+    http.begin(discordWebhookUrl); // Inicia a conexão com seu link do Discord
+    http.addHeader("Content-Type", "application/json"); // Avisa que vamos enviar um JSON
+
+    // Cria a mensagem no formato JSON que o Discord espera
+    String mensagem = "{\"content\":\"ALERTA: Barulho excessivo detectado na biblioteca!\"}";
+
+    // Envia a requisição POST com a mensagem
+    int httpCode = http.POST(mensagem); 
+    
+    if (httpCode > 0) {
+      Serial.printf("[Discord] Alerta enviado com sucesso, código: %d\n", httpCode);
+    } else {
+      Serial.printf("[Discord] Falha no envio do alerta, erro: %s\n", http.errorToString(httpCode).c_str());
+    }
+    
+    http.end(); // Fecha a conexão
+  } else {
+    Serial.println("WiFi desconectado. Não foi possível enviar alerta Discord.");
+  }
+}
+
+
+// Conecta ao Wi-Fi
+void conectarWiFi() {
+  Serial.print("Conectando ao WiFi: ");
+  Serial.println(ssid);
+  
+  WiFi.begin(ssid, password);
+  
+  int tentativas = 0;
+  while (WiFi.status() != WL_CONNECTED && tentativas < 20) {
+    delay(500);
+    Serial.print(".");
+    tentativas++;
+  }
+  
+  if(WiFi.status() == WL_CONNECTED){
+    Serial.println("\nWiFi Conectado!");
+    Serial.print("Endereço IP: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\nFalha ao conectar no WiFi. Verifique a senha.");
+  }
+}
