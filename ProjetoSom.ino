@@ -1,6 +1,6 @@
 /*
  * PROJETO: SEMÁFORO DE RUÍDO IoT (Versão com Discord)
- * Autor: (Seu Nome)
+ * Autor: (Fredson Santana)
  *
  * Componentes:
  * - ESP32
