@@ -1,90 +1,92 @@
 /*
- * PROJETO: SEMÁFORO DE RUÍDO IoT (Versão com Microfone Digital I2S)
- * Autor: (Seu Nome)
+ * PROJETO: SEMÁFORO DE RUÍDO IoT (Versão com Microfone ANALÓGICO MAX4466)
+ *
+ * *** VERSÃO FINAL (COM MENSAGEM DE "ONLINE" NO DISCORD AO INICIAR) ***
  *
  * Componentes:
  * - ESP32
- * - Microfone I2S (INMP441 ou similar)
- * - 3 LEDs (Verde, Amarelo, Vermelho)
+ * - Microfone Analógico (MAX4466)
+ * - 2 LEDs (Amarelo, Vermelho)
  */
 
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include "driver/i2s.h" // <-- Biblioteca para o microfone I2S
 
-// --- CONFIGURAÇÕES DO USUÁRIO (TUDO PREENCHIDO) ---
-const char* ssid = "detector-conversa";
-const char* password = "12345678";
+// --- CONFIGURAÇÕES DO USUÁRIO ---
+const char* ssid = "Fred";
+const char* password = "sophia24";
 String thingSpeakApiKey = "XXHKUFADAP5IFK1S"; 
-String discordWebhookUrl = "https://discord.com/api/webhooks/1438165252041609307/AvdU1fdwQuqXlI4cK3lZdtA4lJpJv9EO92lcKXUR7RpmR0fgC3IQdxtr9ACM6WVyzWQp"; 
+String discordWebhookUrl = "https://discord.com/api/webhooks/1438165252041609307/AvdU1fdwQuqXlI4cK3lZdtA4lJpJv9EO92lcKXUR7RpmR0fgC3IQdxtr9ACM6WVyzWQp";
 
 // --- CONFIGURAÇÃO DO HARDWARE (PINOS) ---
-// *** PINOS DOS LEDS MUDARAM! ***
-const int LED_VERDE_PIN = 18;
-const int LED_AMARELO_PIN = 19;
-const int LED_VERMELHO_PIN = 21;
+const int LED_AMARELO_PIN = 19; // "Conversa suave"
+const int LED_VERMELHO_PIN = 21; // "Conversa atrapalhando"
 
-// --- CONFIGURAÇÃO DO MICROFONE I2S ---
-const i2s_port_t I2S_PORT = I2S_NUM_0;
-const int I2S_SD_PIN = 34; // SD (Dados)
-const int I2S_WS_PIN = 25; // WS (Word Select)
-const int I2S_SCK_PIN = 26; // SCK (Clock)
-const int I2S_BUFFER_SIZE = 512; // Tamanho do buffer de leitura
+// --- CONFIGURAÇÃO DO MICROFONE ANALÓGICO (MAX4466) ---
+const int MIC_PIN = 34; // Tem que ser um pino ADC!
+const int sampleWindow = 50; // ms
 
-// --- CALIBRAÇÃO (PARA AJUSTAR AMANHÃ) ---
-// Os valores de I2S são diferentes do analógico. Teremos que ajustar!
-int LIMITE_AMARELO = 5000;   // Chute inicial (0 a 30.000+)
-int LIMITE_VERMELHO = 15000; // Chute inicial
+// --- CALIBRAÇÃO (AJUSTADA) ---
+int LIMITE_AMARELO = 400; // Nível para "conversa suave"
+int LIMITE_VERMELHO = 1000; // Nível para "conversa atrapalhando" (Mais tolerante)
 
 
 // --- VARIÁVEIS DE CONTROLE DE TEMPO ---
-long intervaloThingSpeak = 60000; 
+long intervaloThingSpeak = 60000; // 1 minuto
 unsigned long tempoAnteriorThingSpeak = 0;
-long intervaloAlertaRuido = 30000; 
+long intervaloAlertaRuido = 30000; // 30 segundos
 unsigned long tempoInicioLedVermelho = 0;
-bool alertaEnviado = false; 
+bool alertaEnviado = false;
+
+
+// ======================================
+//   PROTÓTIPOS DAS FUNÇÕES 
+// ======================================
+int getSoundAmplitude();
+void controlarLEDs(int nivelRuído);
+void checarAlertaDiscord();
+void enviarDadosThingSpeak(int nivelRuido);
+void enviarMensagemDiscord(String mensagemConteudo); // <-- NOVA FUNÇÃO
+void dispararAlertaDiscord();
+void conectarWiFi();
+
 
 // ==================
 // FUNÇÃO DE SETUP
 // ==================
 void setup() {
-  Serial.begin(115200); 
-  
-  // Define os pinos dos LEDs como SAÍDA
-  pinMode(LED_VERDE_PIN, OUTPUT);
+  Serial.begin(115200);
+
   pinMode(LED_AMARELO_PIN, OUTPUT);
   pinMode(LED_VERMELHO_PIN, OUTPUT);
-
-  // Acende o LED verde para mostrar que ligou
-  digitalWrite(LED_VERDE_PIN, HIGH);
   digitalWrite(LED_AMARELO_PIN, LOW);
   digitalWrite(LED_VERMELHO_PIN, LOW);
-  
-  // Inicia o microfone I2S
-  iniciarMicrofoneI2S();
 
-  // Inicia a conexão Wi-Fi
+  // 1. Conecta ao WiFi
   conectarWiFi();
+  
+  // 2. *** MANDA MENSAGEM DE "ONLINE" PARA O DISCORD ***
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Enviando mensagem de 'Online' para o Discord...");
+    enviarMensagemDiscord("✅ O Monitor de Ruído está ONLINE e funcionando.");
+  }
+  
+  Serial.println("Setup concluído. Iniciando loop principal...");
 }
 
 // ==================
 // FUNÇÃO DE LOOP
 // ==================
 void loop() {
-  // 1. Ler o nível de ruído do microfone I2S
-  int nivelRuido = lerMicrofone();
+  int nivelRuido = getSoundAmplitude(); 
+  controlarLEDs(nivelRuido); 
 
-  // 2. Controlar os LEDs com base no ruído
-  controlarLEDs(nivelRuido);
-
-  // 3. Enviar dados para o ThingSpeak
   unsigned long agora = millis();
   if (agora - tempoAnteriorThingSpeak >= intervaloThingSpeak) {
     enviarDadosThingSpeak(nivelRuido);
-    tempoAnteriorThingSpeak = agora; 
+    tempoAnteriorThingSpeak = agora;
   }
 
-  // 4. Checar se o alerta do Discord deve ser enviado
   checarAlertaDiscord();
 }
 
@@ -93,163 +95,110 @@ void loop() {
 // FUNÇÕES AUXILIARES
 // ==================
 
-// *** NOVA FUNÇÃO PARA INICIAR O I2S ***
-void iniciarMicrofoneI2S() {
-  Serial.println("Configurando Microfone I2S...");
-  
-  i2s_config_t i2s_config = {
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
-    .sample_rate = 44100,
-    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
-    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-    .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_STAND_I2S),
-    .intr_alloc_flags = 0,
-    .dma_buf_count = 8,
-    .dma_buf_len = 64,
-    .use_apll = false,
-    .tx_desc_auto_clear = false,
-    .fixed_mclk = 0
-  };
+int getSoundAmplitude() {
+  unsigned long startTime = millis();
+  unsigned int signalMax = 0;
+  unsigned int signalMin = 4095;
 
-  i2s_pin_config_t pin_config = {
-    .bck_io_num = I2S_SCK_PIN, // SCK
-    .ws_io_num = I2S_WS_PIN,  // WS
-    .data_out_num = I2S_PIN_NO_CHANGE, // Não usado (só estamos recebendo)
-    .data_in_num = I2S_SD_PIN     // SD
-  };
-
-  i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
-  i2s_set_pin(I2S_PORT, &pin_config);
-  i2s_set_clk(I2S_PORT, 44100, I2S_BITS_PER_SAMPLE_32BIT, I2S_CHANNEL_STEREO);
-}
-
-
-// *** FUNÇÃO ATUALIZADA PARA LER O I2S ***
-// Lê o microfone e calcula o volume (RMS)
-int lerMicrofone() {
-  int32_t amostras[I2S_BUFFER_SIZE];
-  size_t bytesLidos = 0;
-
-  // Lê um bloco de dados do microfone
-  i2s_read(I2S_PORT, &amostras, sizeof(amostras), &bytesLidos, portMAX_DELAY);
-
-  if (bytesLidos == 0) {
-    return 0;
-  }
-  
-  double somaQuadrados = 0;
-  int numeroAmostras = bytesLidos / sizeof(int32_t);
-
-  // Calcula o RMS (Root Mean Square) para achar o "volume"
-  for (int i = 0; i < numeroAmostras; i++) {
-    // Os dados vêm em 32 bits, mas o som real está nos 24 bits mais altos
-    // (Por isso o shift >> 8)
-    int32_t amostraLimpa = amostras[i] >> 8; 
-    
-    // Ignora amostras estranhas (às vezes acontece)
-    if (amostraLimpa > 2000000 || amostraLimpa < -2000000) {
-      continue;
+  while (millis() - startTime < sampleWindow) {
+    int sample = analogRead(MIC_PIN); 
+    if (sample < 4095) { 
+      if (sample > signalMax) {
+        signalMax = sample;
+      } else if (sample < signalMin) {
+        signalMin = sample;
+      }
     }
-    
-    somaQuadrados += (double)amostraLimpa * (double)amostraLimpa;
   }
+  unsigned int peakToPeak = signalMax - signalMin;
 
-  double mediaQuadrados = somaQuadrados / numeroAmostras;
-  double rms = sqrt(mediaQuadrados);
-  
-  int nivelRuido = (int)rms; // Converte para um inteiro
+  Serial.print("Amplitude (Nível Ruído): ");
+  Serial.println(peakToPeak);
 
-  // IMPORTANTE: Imprime o valor no Monitor Serial
-  // É ASSIM que você vai calibrar (ver os números amanhã)
-  Serial.print("Nível de Ruído (RMS): ");
-  Serial.println(nivelRuido);
-  
-  delay(50); 
-  return nivelRuido;
+  return peakToPeak;
 }
 
-// Controla qual LED deve acender (lógica idêntica, só os pinos mudaram)
 void controlarLEDs(int nivelRuído) {
-  if (nivelRuído >= LIMITE_VERMELHO) {
+  if (nivelRuído >= LIMITE_VERMELHO) { 
     // Nível ALTO (Vermelho)
-    digitalWrite(LED_VERDE_PIN, LOW);
     digitalWrite(LED_AMARELO_PIN, LOW);
     digitalWrite(LED_VERMELHO_PIN, HIGH);
     
     if (tempoInicioLedVermelho == 0) {
       tempoInicioLedVermelho = millis();
     }
-    alertaEnviado = false; 
+    alertaEnviado = false;
 
   } else if (nivelRuído >= LIMITE_AMARELO) {
     // Nível MÉDIO (Amarelo)
-    digitalWrite(LED_VERDE_PIN, LOW);
     digitalWrite(LED_AMARELO_PIN, HIGH);
     digitalWrite(LED_VERMELHO_PIN, LOW);
     tempoInicioLedVermelho = 0; 
     
   } else {
-    // Nível BAIXO (Verde)
-    digitalWrite(LED_VERDE_PIN, HIGH);
+    // Nível BAIXO (Silêncio)
     digitalWrite(LED_AMARELO_PIN, LOW);
     digitalWrite(LED_VERMELHO_PIN, LOW);
     tempoInicioLedVermelho = 0; 
   }
 }
 
-// Verifica se o LED vermelho está aceso por tempo suficiente
 void checarAlertaDiscord() {
   if (tempoInicioLedVermelho != 0 && !alertaEnviado) {
     if (millis() - tempoInicioLedVermelho >= intervaloAlertaRuido) {
       Serial.println(">>> TEMPO DE ALERTA ATINGIDO! Enviando notificação para o Discord...");
-      dispararAlertaDiscord();
+      dispararAlertaDiscord(); 
       alertaEnviado = true; 
-      tempoInicioLedVermelho = 0; 
+      tempoInicioLedVermelho = 0;
     }
   }
 }
 
-// Envia os dados de ruído para o ThingSpeak
 void enviarDadosThingSpeak(int nivelRuido) {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     String url = "http://api.thingspeak.com/update?api_key=" + thingSpeakApiKey + "&field1=" + String(nivelRuido);
     
-    http.begin(url); 
-    int httpCode = http.GET(); 
+    http.begin(url);
+    int httpCode = http.GET();
     
     if (httpCode > 0) {
       Serial.printf("[ThingSpeak] Enviado com sucesso, código: %d\n", httpCode);
     } else {
       Serial.printf("[ThingSpeak] Falha no envio, erro: %s\n", http.errorToString(httpCode).c_str());
     }
-    http.end(); 
+    http.end();
   } else {
     Serial.println("WiFi desconectado. Não foi possível enviar para o ThingSpeak.");
   }
 }
 
-// Dispara o alerta para o Discord
-void dispararAlertaDiscord() {
+// *** FUNÇÃO GENÉRICA PARA ENVIAR QUALQUER MENSAGEM ***
+void enviarMensagemDiscord(String mensagemConteudo) {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
-    http.begin(discordWebhookUrl); 
-    http.addHeader("Content-Type", "application/json"); 
-    String mensagem = "{\"content\":\"ALERTA: Barulho excessivo detectado na biblioteca!\"}";
-    int httpCode = http.POST(mensagem); 
+    http.begin(discordWebhookUrl);
+    http.addHeader("Content-Type", "application/json");
+    
+    String mensagem = "{\"content\":\"" + mensagemConteudo + "\"}";
+    
+    int httpCode = http.POST(mensagem);
     
     if (httpCode > 0) {
-      Serial.printf("[Discord] Alerta enviado com sucesso, código: %d\n", httpCode);
+      Serial.printf("[Discord] Mensagem enviada com sucesso, código: %d\n", httpCode);
     } else {
-      Serial.printf("[Discord] Falha no envio do alerta, erro: %s\n", http.errorToString(httpCode).c_str());
+      Serial.printf("[Discord] Falha no envio da mensagem, erro: %s\n", http.errorToString(httpCode).c_str());
     }
-    http.end(); 
+    http.end();
   } else {
-    Serial.println("WiFi desconectado. Não foi possível enviar alerta Discord.");
+    Serial.println("WiFi desconectado. Não foi possível enviar mensagem Discord.");
   }
 }
 
-// Conecta ao Wi-Fi
+void dispararAlertaDiscord() {
+  enviarMensagemDiscord("ALERTA: Barulho excessivo detectado na biblioteca!");
+}
+
 void conectarWiFi() {
   Serial.print("Conectando ao WiFi: ");
   Serial.println(ssid);
